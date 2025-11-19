@@ -103,6 +103,7 @@ func QueryUpdate(args *QueryUpdateArgs) (*ResponseResult, error) {
 		"isLocked": true,
 		"type":     "0",
 		"deviceId": GUID,
+		"opex": map[string]interface{}{ "check": true },
 	}); err == nil {
 		bytes, err := json.Marshal(RequestBody{
 			Cipher: crypto.FromBytes(r).
