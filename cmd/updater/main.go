@@ -1,33 +1,19 @@
 package main
 
 import (
+	"fmt"
+	"log"
+
 	"github.com/Houvven/OplusUpdater/pkg/updater"
 	"github.com/spf13/cobra"
-	"log"
 )
 
-func getStringFlag(cmd *cobra.Command, flagName string) string {
-	flag, err := cmd.Flags().GetString(flagName)
-	if err != nil {
-		log.Fatalf("Error in %s: %v", flagName, err)
-	}
-	return flag
-}
-
-func getIntFlag(cmd *cobra.Command, flagName string) int {
-	flag, err := cmd.Flags().GetInt(flagName)
-	if err != nil {
-		log.Fatalf("Error in %s: %v", flagName, err)
-	}
-	return flag
-}
-
-var example = `
-  updater CPH2401_11.C.58_0580_202402190800 --model=CPH2401 --region=CN
-  updater RMX3820_13.1.0.130_0130_202404010000 --model=RMX3820 --region=IN --mode=1
-  updater A127_13.0_0001 --model=A127 --carrier=00000000 --proxy=http://localhost:7890
-  updater OPD2413_11.A --model=OPD2413 --region=CN --gray=1
-  updater PJX110_11.C --region=CN --reqmode=taste
+const example = `
+  updater CPH2401_11.C.58_0580_202402190800 --region=CN --model=CPH2401
+  updater RMX3820_13.1.0.130_0130_202404010000 --region=IN --mode=client_auto --json
+  updater A127_13.0_0001 --carrier-id=00000000 --proxy-url=http://localhost:7890
+  updater OPD2413_11.A --region=CN --gray
+  updater PJX110_11.C --region=CN --mode=taste
 `
 
 var rootCmd = &cobra.Command{
@@ -38,13 +24,32 @@ var rootCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		otaVer := args[0]
 
-		model := getStringFlag(cmd, "model")
-		carrier := getStringFlag(cmd, "carrier")
-		region := getStringFlag(cmd, "region")
-		guid := getStringFlag(cmd, "guid")
-		proxy := getStringFlag(cmd, "proxy")
-		gray := getIntFlag(cmd, "gray")
-		reqmode := getStringFlag(cmd, "reqmode")
+		mustStr := func(name string) string {
+			v, err := cmd.Flags().GetString(name)
+			if err != nil {
+				log.Fatal(err)
+			}
+			return v
+		}
+		mustBool := func(name string) bool {
+			v, err := cmd.Flags().GetBool(name)
+			if err != nil {
+				log.Fatal(err)
+			}
+			return v
+		}
+
+		model := mustStr("model")
+		carrier := mustStr("carrier")
+		region := mustStr("region")
+		guid := mustStr("guid")
+		proxy := mustStr("proxy")
+		gray := mustBool("gray")
+		mode := mustStr("mode")
+
+		if gray && mode == "taste" {
+			log.Fatal("reqmode=taste cannot be used together with gray=1")
+		}
 
 		result, err := updater.QueryUpdate(&updater.QueryUpdateArgs{
 			OtaVersion: otaVer,
@@ -54,23 +59,35 @@ var rootCmd = &cobra.Command{
 			GUID:       guid,
 			Proxy:      proxy,
 			Gray:       gray,
-			ReqMode:    reqmode,
+			Mode:       mode,
 		})
 		if err != nil {
 			log.Fatalf("Error in QueryUpdate: %v", err)
+		}
+		jsonOut := mustBool("json")
+		rawOut := mustBool("raw")
+		if rawOut {
+			fmt.Println(string(result.DecryptedBodyBytes))
+			return
+		}
+		if jsonOut {
+			fmt.Println(string(result.AsJSON()))
+			return
 		}
 		result.PrettyPrint()
 	},
 }
 
 func init() {
-	rootCmd.Flags().StringP("model", "m", "", "Device model (required), e.g., RMX3820, CPH2401")
-	rootCmd.Flags().StringP("region", "r", "CN", "Server region: CN (default), EU or IN")
-	rootCmd.Flags().StringP("carrier", "c", "", "Carrier ID found in `my_manifest/build.prop` file under the `NV_ID` reference, e.g., 01000100")
-	rootCmd.Flags().StringP("guid", "g", "", "GUID, e.g., 1234567890(64 bit)")
-	rootCmd.Flags().StringP("proxy", "p", "", "Proxy server, e.g., type://user:password@host:port")
-	rootCmd.Flags().Int("gray", 0, "Gray update server: 0 (default) or 1 (use gray server for CN region)")
-	rootCmd.Flags().String("reqmode", "manual", "Request Mode: manual (default), server_auto, client_auto or taste. Do not use taste mode together with gray update mode (--gray=1).")
+	rootCmd.Flags().StringP("model", "m", "", "Device model, e.g., RMX3820;")
+	rootCmd.Flags().StringP("region", "r", "CN", "Server region: CN (default), EU, IN, SG, RU, TR, TH or GL")
+	rootCmd.Flags().StringP("carrier", "c", "", "Carrier ID, empty to use region default")
+	rootCmd.Flags().StringP("guid", "g", "", "GUID, empty to use zeros")
+	rootCmd.Flags().StringP("proxy", "p", "", "Proxy URL, e.g., type://user:password@host:port")
+	rootCmd.Flags().Bool("gray", false, "Use gray update server (CN only)")
+	rootCmd.Flags().String("mode", "manual", "Request mode: manual, server_auto, client_auto or taste; taste is incompatible with --gray")
+	rootCmd.Flags().Bool("json", false, "Output JSON without color")
+	rootCmd.Flags().Bool("raw", false, "Output raw decrypted payload string")
 }
 
 func main() {

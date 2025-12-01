@@ -3,12 +3,32 @@ package updater
 import (
 	"encoding/base64"
 	"encoding/json"
-	"github.com/deatil/go-cryptobin/cryptobin/crypto"
-	"github.com/go-resty/resty/v2"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/deatil/go-cryptobin/cryptobin/crypto"
+	"github.com/go-resty/resty/v2"
 )
+
+var allowedReqModes = map[string]struct{}{
+	"manual":      {},
+	"server_auto": {},
+	"client_auto": {},
+	"taste":       {},
+}
+
+func validateReqMode(mode string) (string, error) {
+	m := strings.TrimSpace(mode)
+	if m == "" {
+		return "manual", nil
+	}
+	if _, ok := allowedReqModes[m]; ok {
+		return m, nil
+	}
+	return "", fmt.Errorf("invalid reqmode: %s", m)
+}
 
 type QueryUpdateArgs struct {
 	OtaVersion string
@@ -17,11 +37,11 @@ type QueryUpdateArgs struct {
 	NvCarrier  string
 	GUID       string
 	Proxy      string
-	Gray       int
-	ReqMode    string
+	Gray       bool
+	Mode       string
 }
 
-func (args *QueryUpdateArgs) post() {
+func (args *QueryUpdateArgs) normalize() {
 	if len(strings.Split(args.OtaVersion, "_")) < 3 || len(strings.Split(args.OtaVersion, ".")) < 3 {
 		args.OtaVersion += ".01_0001_197001010000"
 	}
@@ -33,42 +53,25 @@ func (args *QueryUpdateArgs) post() {
 	}
 }
 
-func QueryUpdate(args *QueryUpdateArgs) (*ResponseResult, error) {
-	args.post()
-
-	config := GetConfig(args.Region, args.Gray)
-	if args.NvCarrier == "" {
-		args.NvCarrier = config.CarrierID
-	}
-	iv, err := RandomIv()
+func buildCryptoMaterials(config *Config) ([]byte, []byte, string, string, error) {
+	iv, err := RandomIV()
 	if err != nil {
-		return nil, err
+		return nil, nil, "", "", err
 	}
 	key, err := RandomKey()
 	if err != nil {
-		return nil, err
+		return nil, nil, "", "", err
 	}
 	protectedKey, err := GenerateProtectedKey(key, []byte(config.PublicKey))
 	if err != nil {
-		return nil, err
+		return nil, nil, "", "", err
 	}
+	version := GenerateProtectedVersion()
+	return iv, key, protectedKey, version, nil
+}
 
-	var deviceId string
-	var GUID string
-	deviceId = GenerateDefaultDeviceId()
-	if len(strings.TrimSpace(args.GUID)) == 0 {
-	    GUID = GenerateDefaultDeviceId()
-	} else {
-		GUID = strings.ToLower(args.GUID)
-	}
-
-	reqMode := "manual"
-	if args.ReqMode != "" {
-		reqMode = args.ReqMode
-	}
-
-	requestUrl := url.URL{Host: config.Host, Scheme: "https", Path: "/update/v5"}
-	requestHeaders := map[string]string{
+func buildHeaders(config *Config, args *QueryUpdateArgs, deviceID string, reqMode string, protectedKeyHeader string) map[string]string {
+	headers := map[string]string{
 		"language":       config.Language,
 		"androidVersion": "unknown",
 		"colorOSVersion": "unknown",
@@ -79,65 +82,106 @@ func QueryUpdate(args *QueryUpdateArgs) (*ResponseResult, error) {
 		"nvCarrier":      args.NvCarrier,
 		"infVersion":     "1",
 		"version":        config.Version,
-		"deviceId":       deviceId,
+		"deviceId":       deviceID,
 		"Content-Type":   "application/json; charset=utf-8",
 	}
-	pkm := map[string]CryptoConfig{
-		"SCENE_1": {
-			ProtectedKey:       protectedKey,
-			Version:            GenerateProtectedVersion(),
-			NegotiationVersion: config.PublicKeyVersion,
-		},
-	}
-	if pk, err := json.Marshal(pkm); err == nil {
-		requestHeaders["protectedKey"] = string(pk)
-	} else {
-		return nil, err
-	}
+	headers["protectedKey"] = protectedKeyHeader
+	return headers
+}
 
-	var requestBody string
-	if r, err := json.Marshal(map[string]any{
+func buildRequestBody(key, iv []byte, guid string) (string, error) {
+	payload, err := json.Marshal(map[string]any{
 		"mode":     "0",
 		"time":     time.Now().UnixMilli(),
 		"isRooted": "0",
 		"isLocked": true,
 		"type":     "0",
-		"deviceId": GUID,
-		"opex": map[string]interface{}{ "check": true },
-	}); err == nil {
-		bytes, err := json.Marshal(RequestBody{
-			Cipher: crypto.FromBytes(r).
-				Aes().CTR().NoPadding().
-				WithKey(key).WithIv(iv).
-				Encrypt().
-				ToBase64String(),
-			Iv: base64.StdEncoding.EncodeToString(iv),
-		})
-		if err != nil {
-			return nil, err
-		} else {
-			requestBody = string(bytes)
-		}
-	} else {
+		"deviceId": guid,
+		"opex":     map[string]any{"check": true},
+	})
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(RequestBody{
+		Cipher: crypto.FromBytes(payload).
+			Aes().CTR().NoPadding().
+			WithKey(key).WithIv(iv).
+			Encrypt().
+			ToBase64String(),
+		Iv: base64.StdEncoding.EncodeToString(iv),
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func doRequest(headers map[string]string, body string, host string, proxy string) (*resty.Response, error) {
+	endpoint := url.URL{Host: host, Scheme: "https", Path: "/update/v5"}
+	client := resty.New()
+	if p := strings.TrimSpace(proxy); len(p) > 0 {
+		client.SetProxy(p)
+	}
+	resp, err := client.R().
+		SetHeaders(headers).
+		SetBody(map[string]string{"params": body}).
+		Post(endpoint.String())
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func QueryUpdate(args *QueryUpdateArgs) (*ResponseResult, error) {
+	args.normalize()
+
+	config := GetConfig(Region(args.Region), args.Gray)
+	if args.NvCarrier == "" {
+		args.NvCarrier = config.CarrierID
+	}
+	iv, key, protectedKey, version, err := buildCryptoMaterials(config)
+	if err != nil {
 		return nil, err
 	}
 
-	client := resty.New()
-	if p := strings.TrimSpace(args.Proxy); len(p) > 0 {
-		client.SetProxy(p)
+	deviceID := GenerateDefaultDeviceID()
+	GUID := GenerateDefaultDeviceID()
+	if strings.TrimSpace(args.GUID) != "" {
+		GUID = strings.ToLower(args.GUID)
 	}
-	response, err := client.R().
-		SetHeaders(requestHeaders).
-		SetBody(map[string]string{"params": requestBody}).
-		Post(requestUrl.String())
+
+	reqMode, err := validateReqMode(args.Mode)
+	if err != nil {
+		return nil, err
+	}
+
+	pkm := map[string]CryptoConfig{
+		"SCENE_1": {
+			ProtectedKey:       protectedKey,
+			Version:            version,
+			NegotiationVersion: config.PublicKeyVersion,
+		},
+	}
+	pk, err := json.Marshal(pkm)
+	if err != nil {
+		return nil, err
+	}
+	headers := buildHeaders(config, args, deviceID, reqMode, string(pk))
+
+	requestBody, err := buildRequestBody(key, iv, GUID)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := doRequest(headers, requestBody, config.Host, args.Proxy)
 
 	if err != nil {
 		return nil, err
 	}
 
 	var responseResult *ResponseResult
-	if json.Unmarshal(response.Body(), &responseResult) != nil {
-		return nil, err
+	if unmarshalErr := json.Unmarshal(response.Body(), &responseResult); unmarshalErr != nil {
+		return nil, unmarshalErr
 	}
 
 	if err := responseResult.DecryptBody(key); err != nil {

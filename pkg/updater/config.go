@@ -9,7 +9,7 @@ type Config struct {
 	Version          string // Found in `com.oplus.app-features.xml` file
 }
 
-type Region = string
+type Region string
 
 const (
 	RegionCn = "CN"
@@ -24,7 +24,7 @@ const (
 
 const commonHost = "component-ota-sg.allawnos.com"
 
-func GetConfig(region string, gray int) *Config {
+func GetConfig(region Region, gray bool) *Config {
 	const defaultVersion = "2"
 
 	baseConfigSG := &Config{
@@ -34,7 +34,7 @@ func GetConfig(region string, gray int) *Config {
 		Version:          defaultVersion,
 	}
 
-	regionOverrides := map[string]struct {
+	regionOverrides := map[Region]struct {
 		CarrierID string
 		Language  string
 	}{
@@ -45,6 +45,25 @@ func GetConfig(region string, gray int) *Config {
 		RegionGl: {"10100111", "en-US"},
 	}
 
+	regionConfigs := map[Region]*Config{
+		RegionEu: {
+			CarrierID:        "01000100",
+			Host:             "component-ota-eu.allawnos.com",
+			Language:         "en-GB",
+			PublicKey:        publicKeyEU,
+			PublicKeyVersion: "1615897067573",
+			Version:          defaultVersion,
+		},
+		RegionIn: {
+			CarrierID:        "00011011",
+			Host:             "component-ota-in.allawnos.com",
+			Language:         "en-IN",
+			PublicKey:        publicKeyIN,
+			PublicKeyVersion: "1615896309308",
+			Version:          defaultVersion,
+		},
+	}
+
 	if override, ok := regionOverrides[region]; ok {
 		cfg := *baseConfigSG
 		cfg.CarrierID = override.CarrierID
@@ -52,29 +71,13 @@ func GetConfig(region string, gray int) *Config {
 		return &cfg
 	}
 
-	switch region {
-	case RegionEu:
-		return &Config{
-			CarrierID:        "01000100",
-			Host:             "component-ota-eu.allawnos.com",
-			Language:         "en-GB",
-			PublicKey:        publicKeyEU,
-			PublicKeyVersion: "1615897067573",
-			Version:          defaultVersion,
-		}
-	case RegionIn:
-		return &Config{
-			CarrierID:        "00011011",
-			Host:             "component-ota-in.allawnos.com",
-			Language:         "en-IN",
-			PublicKey:        publicKeyIN,
-			PublicKeyVersion: "1615896309308",
-			Version:          defaultVersion,
-		}
+	if cfg, ok := regionConfigs[region]; ok {
+		c := *cfg
+		return &c
 	}
 
 	host := "component-ota-cn.allawntech.com"
-	if gray == 1 {
+	if gray {
 		host = "component-ota-gray.coloros.com"
 	}
 

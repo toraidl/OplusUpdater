@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func RandomIv() ([]byte, error) {
+func RandomIV() ([]byte, error) {
 	iv := make([]byte, aes.BlockSize)
 	_, err := io.ReadFull(rand.Reader, iv)
 	return iv, err
@@ -35,6 +35,6 @@ func GenerateProtectedKey(key []byte, pubKey []byte) (string, error) {
 	return encrypt.ToBase64String(), encrypt.Error()
 }
 
-func GenerateDefaultDeviceId() string {
+func GenerateDefaultDeviceID() string {
 	return strings.Repeat("0", 64)
 }
