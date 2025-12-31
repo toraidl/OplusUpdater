@@ -1,4 +1,4 @@
-module github.com/Houvven/OplusUpdater
+module github.com/toraidl/OplusUpdater
 
 go 1.24.0
 

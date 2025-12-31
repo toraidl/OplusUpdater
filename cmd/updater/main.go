@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Houvven/OplusUpdater/pkg/updater"
+	"github.com/toraidl/OplusUpdater/pkg/updater"
 	"github.com/spf13/cobra"
 )
 

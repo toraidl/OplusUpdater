@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Houvven/OplusUpdater/pkg/updater"
+	"github.com/toraidl/OplusUpdater/pkg/updater"
 )
 
 func ProcessResult(result *updater.ResponseResult, err error) {
